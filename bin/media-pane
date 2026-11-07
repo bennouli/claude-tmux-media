@@ -82,6 +82,16 @@ reload() {
 		was_at_newest=1
 	fi
 	[[ -n $cur ]] && select_tab "$cur" "$was_at_newest"
+	focus_requested_tab
+}
+
+# show-media <file> (not the hook) asks for its tab through .focus.
+focus_requested_tab() {
+	local key
+	[[ -f $Q/.focus ]] || return
+	key=$(head -1 "$Q/.focus")
+	rm -f "$Q/.focus"
+	[[ $key =~ $KEY_RE && -f $Q/$key/tab ]] && select_tab "$key" 1
 }
 
 switch_tab() {
@@ -163,7 +173,7 @@ trap 'redraw=1' WINCH USR1
 trap 'reload_due=1' USR2
 trap 'tmux set -pu -t "$TMUX_PANE" allow-passthrough; tmux set -pu -t "$TMUX_PANE" @claude_media; kill 0' EXIT
 inotifywait -mqr -e moved_to -e create --format '%e %f' "$Q" | while read -r event file; do
-	[[ ($event == *ISDIR* && $file != .thumbs) || $file == *.meta ]] && kill -USR2 $$
+	[[ ($event == *ISDIR* && $file != .thumbs) || $file == *.meta || $file == .focus ]] && kill -USR2 $$
 done &
 printf '\e[?25l'
 

@@ -34,7 +34,9 @@ tab_of() {
 
 sid=$CLAUDE_CODE_SESSION_ID
 dir=$PWD
+from_hook=0
 if [[ $1 == --hook ]]; then
+	from_hook=1
 	input=$(cat)
 	sid=$(jq -r '.session_id // empty' <<<"$input")
 	dir=$(jq -r '.cwd // empty' <<<"$input")
@@ -49,8 +51,10 @@ mkdir -p "$T" || exit 0
 [[ -f $T/tab ]] || printf '%s\n%s\n%s\n' "$tab_label" "$common" "$branch" >"$T/tab"
 label=$(session_label "$sid")
 
+shown=0
 for f in "$@"; do
 	[[ -f $f && ${f,,} =~ $MEDIA_RE && $f != *$'\n'* ]] || continue
+	shown=1
 	f=$(realpath "$f")
 	last=$(printf '%s\n' "$T"/*.meta | sort | tail -1)
 	if [[ -f $last ]] && [[ $(sed -n 2p "$last") == "$f" ]] && cmp -s "$f" "$T/$(head -1 "$last")"; then
@@ -62,6 +66,11 @@ for f in "$@"; do
 	printf '%s\n%s\n%s\n%s\n' "$id.${ext,,}" "$f" "$label" "$(date '+%H:%M:%S')" >"$T/$id.tmp"
 	mv "$T/$id.tmp" "$T/$id.meta"
 done
+
+# An explicit show-media brings its tab to the front; hook images only mark their tab.
+if ((shown && !from_hook)); then
+	echo "$key" >"$Q/.focus.tmp" && mv "$Q/.focus.tmp" "$Q/.focus"
+fi
 
 # ponytail: prune by count only; add a size cap if videos pile up in tmpfs
 printf '%s\n' "$T"/*.meta | sort | head -n -$KEEP | while read -r m; do
