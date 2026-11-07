@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # show-media <file...>   queue images/videos for the tmux media pane (media-pane)
 # show-media --hook      same, reading a Claude Code hook's JSON from stdin
+# Each repo + branch gets its own tab, taken from where the session works (the hook's cwd, else $PWD).
 # Silent, always exits 0, does nothing when no media pane exists.
 exec >/dev/null 2>&1
 umask 077
@@ -17,36 +18,56 @@ session_label() {
 	echo "${name:-${sid:0:8}}"
 }
 
+# Prints four lines for the tab that work in directory $1 belongs to: key, label, git common dir, branch.
+tab_of() {
+	local common branch repo
+	common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+	branch=$(git -C "$1" branch --show-current 2>/dev/null)
+	if [[ -z $common || -z $branch ]]; then
+		printf 'other\nother\n\n\n'
+		return
+	fi
+	repo=${common%/.git}
+	printf '%s\n%s · %s\n%s\n%s\n' "$(printf '%s:%s' "$common" "$branch" | sha1sum | cut -c1-12)" \
+		"${repo##*/}" "$branch" "$common" "$branch"
+}
+
 sid=$CLAUDE_CODE_SESSION_ID
+dir=$PWD
 if [[ $1 == --hook ]]; then
 	input=$(cat)
 	sid=$(jq -r '.session_id // empty' <<<"$input")
+	dir=$(jq -r '.cwd // empty' <<<"$input")
 	set -- "$(jq -r '.tool_input.file_path // empty' <<<"$input")"
 fi
 
 tmux list-panes -a -F '#{@claude_media}' 2>/dev/null | grep -qx 1 || exit 0
-mkdir -p "$Q" || exit 0
+
+{ read -r key; read -r tab_label; read -r common; read -r branch; } < <(tab_of "${dir:-$PWD}")
+T=$Q/$key
+mkdir -p "$T" || exit 0
+[[ -f $T/tab ]] || printf '%s\n%s\n%s\n' "$tab_label" "$common" "$branch" >"$T/tab"
 label=$(session_label "$sid")
 
 for f in "$@"; do
 	[[ -f $f && ${f,,} =~ $MEDIA_RE && $f != *$'\n'* ]] || continue
 	f=$(realpath "$f")
-	last=$(printf '%s\n' "$Q"/*.meta | sort | tail -1)
-	if [[ -f $last ]] && [[ $(sed -n 2p "$last") == "$f" ]] && cmp -s "$f" "$Q/$(head -1 "$last")"; then
+	last=$(printf '%s\n' "$T"/*.meta | sort | tail -1)
+	if [[ -f $last ]] && [[ $(sed -n 2p "$last") == "$f" ]] && cmp -s "$f" "$T/$(head -1 "$last")"; then
 		continue
 	fi
 	id=$(date +%s%N)
 	ext=${f##*.}
-	cp -- "$f" "$Q/$id.${ext,,}" || continue
-	printf '%s\n%s\n%s\n%s\n' "$id.${ext,,}" "$f" "$label" "$(date '+%H:%M:%S')" >"$Q/$id.tmp"
-	mv "$Q/$id.tmp" "$Q/$id.meta"
+	cp -- "$f" "$T/$id.${ext,,}" || continue
+	printf '%s\n%s\n%s\n%s\n' "$id.${ext,,}" "$f" "$label" "$(date '+%H:%M:%S')" >"$T/$id.tmp"
+	mv "$T/$id.tmp" "$T/$id.meta"
 done
 
 # ponytail: prune by count only; add a size cap if videos pile up in tmpfs
-printf '%s\n' "$Q"/*.meta | sort | head -n -$KEEP | while read -r m; do
+printf '%s\n' "$T"/*.meta | sort | head -n -$KEEP | while read -r m; do
 	[[ -f $m ]] || continue
 	name=$(head -1 "$m")
-	[[ $name =~ ^[0-9]+\.[a-z0-9]+$ ]] && rm -f "$Q/$name" "$Q/.thumbs/$name.png"
+	[[ $name =~ ^[0-9]+\.[a-z0-9]+$ ]] && rm -f "$T/$name" "$T/.thumbs/$name.png"
 	rm -f "$m"
 done
 exit 0

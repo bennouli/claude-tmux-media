@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # media-pane            viewer for the queue show-media fills; runs in a tmux pane
 # media-pane --refresh  make every media pane re-send its image (new client attached, pane re-shown)
-# Keys: p older · n newer · r redraw · q quit. Jumps to each new item as it arrives.
+# One tab per repo + branch; • marks a tab with unseen images; tabs of deleted branches close themselves.
+# Keys: h/l or Tab previous/next tab · p/n older/newer · r redraw · x close tab · q quit.
 
 Q=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is not set}/claude-media
 umask 077
@@ -12,77 +13,179 @@ if [[ $1 == --refresh ]]; then
 	exit 0
 fi
 
-mkdir -p "$Q/.thumbs"
+mkdir -p "$Q"
 tmux set -p -t "$TMUX_PANE" @claude_media 1
 tmux set -p -t "$TMUX_PANE" allow-passthrough on
 shopt -s nullglob
-items=()
-idx=-1
 
-load() {
-	items=("$Q"/*.meta)
-	idx=$((${#items[@]} - 1))
+KEY_RE='^([0-9a-f]{12}|other)$'
+NAME_RE='^[0-9]+\.[a-z0-9]+$'
+tabs=() items=() cur=''
+declare -A label_of pos seen
+
+newest_meta() {
+	local metas=("$Q/$1"/*.meta)
+	((${#metas[@]})) && echo "${metas[-1]##*/}"
+}
+
+newest_tab() {
+	local key newest='' best=''
+	for key in "${tabs[@]}"; do
+		[[ $(newest_meta "$key") > $newest ]] && newest=$(newest_meta "$key") best=$key
+	done
+	echo "${best:-${tabs[0]}}"
+}
+
+close_tab() {
+	[[ $1 =~ $KEY_RE ]] && rm -rf -- "${Q:?}/$1"
+}
+
+# Closes tabs whose branch was deleted or whose repo is gone; succeeds when it closed any.
+close_stale_tabs() {
+	local tab_file key common branch closed=1
+	for tab_file in "$Q"/*/tab; do
+		{ read -r _; read -r common; read -r branch; } <"$tab_file"
+		[[ -n $branch ]] || continue
+		git --git-dir="$common" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null && continue
+		key=${tab_file%/tab}
+		close_tab "${key##*/}" && closed=0
+	done
+	return $closed
+}
+
+load_tabs() {
+	local tab_file key
+	label_of=()
+	for tab_file in "$Q"/*/tab; do
+		key=${tab_file%/tab}
+		key=${key##*/}
+		[[ $key =~ $KEY_RE ]] && label_of[$key]=$(head -1 "$tab_file")
+	done
+	mapfile -t tabs < <(for key in "${!label_of[@]}"; do printf '%s\t%s\n' "${label_of[$key]}" "$key"; done | sort -f | cut -f2)
+}
+
+select_tab() {
+	local jump_to_newest=$2 last
+	cur=$1
+	items=("$Q/$cur"/*.meta)
+	last=$((${#items[@]} - 1))
+	if ((jump_to_newest)) || [[ -z ${pos[$cur]} ]] || ((pos[$cur] > last)); then pos[$cur]=$last; fi
+	seen[$cur]=$(newest_meta "$cur")
+}
+
+reload() {
+	local was_at_newest=1
+	[[ -n $cur ]] && ((pos[$cur] < ${#items[@]} - 1)) && was_at_newest=0
+	load_tabs
+	if [[ -z $cur || ! -f $Q/$cur/tab ]]; then
+		cur=$(newest_tab)
+		was_at_newest=1
+	fi
+	[[ -n $cur ]] && select_tab "$cur" "$was_at_newest"
+}
+
+switch_tab() {
+	local i count=${#tabs[@]}
+	((count)) || return
+	for i in "${!tabs[@]}"; do [[ ${tabs[i]} == "$cur" ]] && break; done
+	select_tab "${tabs[(i + $1 + count) % count]}" 0
 }
 
 # Ghostty has no Kitty animation frames and tmux can't pass mpv's video through, so GIF/video/SVG show one still frame.
 still_frame() {
-	local media=$1 thumb="$Q/.thumbs/${1##*/}.png"
+	local media=$1 thumb="${1%/*}/.thumbs/${1##*/}.png"
 	case ${media,,} in
-	*.svg) [[ -f $thumb ]] || timeout 10 rsvg-convert -o "$thumb" "$media" ;;
-	*.gif | *.mp4 | *.mov | *.webm | *.mkv | *.avi | *.m4v)
-		[[ -f $thumb ]] || timeout 10 ffmpeg -v error -y -protocol_whitelist file \
-			-format_whitelist gif,mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi \
-			-i "$media" -frames:v 1 "$thumb" </dev/null ;;
+	*.svg | *.gif | *.mp4 | *.mov | *.webm | *.mkv | *.avi | *.m4v) mkdir -p "${thumb%/*}" ;;
 	*) echo "$media"; return ;;
 	esac
+	case ${media,,} in
+	*.svg) [[ -f $thumb ]] || timeout 10 rsvg-convert -o "$thumb" "$media" ;;
+	*) [[ -f $thumb ]] || timeout 10 ffmpeg -v error -y -protocol_whitelist file \
+		-format_whitelist gif,mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,avi \
+		-i "$media" -frames:v 1 "$thumb" </dev/null ;;
+	esac
 	echo "$thumb"
+}
+
+tab_bar() {
+	local cols=$1 key part i width=0 start=0 parts=()
+	for key in "${tabs[@]}"; do
+		part=${label_of[$key]//[[:cntrl:]]/?}
+		[[ $(newest_meta "$key") > ${seen[$key]} ]] && part="• $part"
+		parts+=(" $part ")
+		width=$((width + ${#part} + 3))
+	done
+	# ponytail: an overflowing bar starts at the current tab; scroll a window around it if that gets annoying
+	if ((width > cols)); then
+		for i in "${!tabs[@]}"; do [[ ${tabs[i]} == "$cur" ]] && start=$i; done
+	fi
+	printf '\e[?7l'
+	for ((i = start; i < ${#tabs[@]}; i++)); do
+		if [[ ${tabs[i]} == "$cur" ]]; then printf '\e[7m%s\e[0m│' "${parts[i]}"; else printf '\e[2m%s\e[0m│' "${parts[i]}"; fi
+	done
+	printf '\e[?7h\n'
 }
 
 render() {
 	local cols rows name orig label time src note
 	cols=$(tput cols) rows=$(tput lines)
 	printf '\e[H\e[2J\e[3J'
-	if ((${#items[@]} == 0)); then
+	if ((${#tabs[@]} == 0)); then
 		printf 'media pane: waiting for images\n\e[2mshow-media <file> or a Claude Read/Write/Edit of an image\e[0m'
 		return
 	fi
-	{ read -r name; read -r orig; read -r label; read -r time; } <"${items[idx]}"
-	if [[ ! $name =~ ^[0-9]+\.[a-z0-9]+$ ]]; then
-		printf 'skipping malformed queue entry %s' "${items[idx]##*/}"
+	tab_bar "$cols"
+	printf '\e[%d;1H\e[?7l\e[2mh/l tab · p/n older/newer · r redraw · x close tab · q quit\e[0m\e[?7h\e[2;1H' "$rows"
+	((${#items[@]})) || return
+	{ read -r name; read -r orig; read -r label; read -r time; } <"${items[${pos[$cur]}]}"
+	if [[ ! $name =~ $NAME_RE ]]; then
+		printf 'skipping malformed queue entry %s' "${items[${pos[$cur]}]##*/}"
 		return
 	fi
 	orig=${orig//[[:cntrl:]]/?} label=${label//[[:cntrl:]]/?} time=${time//[[:cntrl:]]/?}
-	src=$(still_frame "$Q/$name")
-	[[ $src == "$Q/$name" ]] || note=' · still frame'
-	printf '\e[1m[%d/%d]\e[0m %s · %s%s\n' $((idx + 1)) ${#items[@]} "$label" "$time" "$note"
+	src=$(still_frame "$Q/$cur/$name")
+	[[ $src == "$Q/$cur/$name" ]] || note=' · still frame'
+	printf '\e[1m[%d/%d]\e[0m %s · %s%s\n' $((pos[$cur] + 1)) ${#items[@]} "$label" "$time" "$note"
 	((${#orig} > cols)) && orig="…${orig: -$((cols - 1))}"
 	printf '\e[2m%s\e[0m' "$orig"
 	if [[ ! -f $src ]]; then
-		printf '\e[3;1H(no frame: %s missing or conversion failed)' "${src##*/}"
+		printf '\e[4;1H(no frame: %s missing or conversion failed)' "${src##*/}"
 	# FOOTGUN: icat exits 0 when it fails to decode, so stderr is the only failure signal.
 	elif ! kitten icat --passthrough=tmux --transfer-mode=stream --align=left --scale-up \
-		--place "$((cols - 1))x$((rows - 3))@0x2" "$src" 2>"$Q/.icat-err" || [[ -s $Q/.icat-err ]]; then
-		printf '\e[3;1H\e[31micat: %s\e[0m\n' "$(tr -d '\000-\037\177' <"$Q/.icat-err" | sed 's/\[[0-9;]*m//g' | head -c $((cols * 2)))"
-		command -v chafa >/dev/null && chafa -s "${cols}x$((rows - 4))" "$src"
+		--place "$((cols - 1))x$((rows - 4))@0x3" "$src" 2>"$Q/.icat-err" || [[ -s $Q/.icat-err ]]; then
+		printf '\e[4;1H\e[31micat: %s\e[0m\n' "$(tr -d '\000-\037\177' <"$Q/.icat-err" | sed 's/\[[0-9;]*m//g' | head -c $((cols * 2)))"
+		command -v chafa >/dev/null && chafa -s "${cols}x$((rows - 5))" "$src"
 	fi
-	printf '\e[%d;1H\e[2mp older · n newer · r redraw · q quit\e[0m' "$rows"
 }
 
-redraw=1 reload=0
+redraw=1 reload_due=0 ticks=0
 trap 'redraw=1' WINCH USR1
-trap 'reload=1' USR2
+trap 'reload_due=1' USR2
 trap 'tmux set -pu -t "$TMUX_PANE" allow-passthrough; tmux set -pu -t "$TMUX_PANE" @claude_media; kill 0' EXIT
-inotifywait -mq -e moved_to --include '\.meta$' --format x "$Q" | while read -r _; do kill -USR2 $$; done &
+inotifywait -mqr -e moved_to -e create --format '%e %f' "$Q" | while read -r event file; do
+	[[ ($event == *ISDIR* && $file != .thumbs) || $file == *.meta ]] && kill -USR2 $$
+done &
 printf '\e[?25l'
-load
+
+close_stale_tabs
+load_tabs
+for key in "${tabs[@]}"; do seen[$key]=$(newest_meta "$key"); done
+cur=$(newest_tab)
+[[ -n $cur ]] && select_tab "$cur" 1
 
 while :; do
-	if ((reload)); then reload=0 redraw=1; load; fi
+	if ((reload_due)); then reload_due=0 redraw=1; reload; fi
 	if ((redraw)); then redraw=0; render; fi
-	read -rsn1 -t 1 key || continue
+	if ! read -rsn1 -t 1 key; then
+		((++ticks % 60 == 0)) && close_stale_tabs && reload_due=1
+		continue
+	fi
 	case $key in
-	p) ((idx > 0)) && { idx=$((idx - 1)); redraw=1; } ;;
-	n) ((idx < ${#items[@]} - 1)) && { idx=$((idx + 1)); redraw=1; } ;;
+	h) switch_tab -1; redraw=1 ;;
+	l | $'\t') switch_tab 1; redraw=1 ;;
+	p) [[ -n $cur ]] && ((pos[$cur] > 0)) && { pos[$cur]=$((pos[$cur] - 1)); redraw=1; } ;;
+	n) [[ -n $cur ]] && ((pos[$cur] < ${#items[@]} - 1)) && { pos[$cur]=$((pos[$cur] + 1)); redraw=1; } ;;
+	x) [[ -n $cur ]] && { close_tab "$cur"; cur=''; reload_due=1; } ;;
 	r) redraw=1 ;;
 	q) exit 0 ;;
 	esac

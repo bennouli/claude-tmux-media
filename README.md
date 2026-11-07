@@ -5,8 +5,10 @@ A tmux side pane that shows every image Claude Code reads, writes or wants to sh
 - `prefix+M` (default `Ctrl+b`, then `Shift+m`) opens or hides the media pane next to the current pane. Hiding parks it in a window named `_media`; it keeps running and keeps its history.
 - A Claude Code `PostToolUse` hook on `Read|Write|Edit` sends image and video files to the pane automatically.
 - `show-media <file...>` sends files by hand. Claude is told to use it through `~/.claude/CLAUDE.md`.
-- In the pane: `p` older, `n` newer, `r` redraw, `q` quit. New items jump to the front. The last 50 items are kept in `$XDG_RUNTIME_DIR/claude-media/`.
-- One feed for all Claude sessions; each item is labelled with its session's name.
+- One tab per repo + branch, taken from where the Claude session works (the hook's `cwd`), so every worktree gets its own tab. Sessions outside git share an `other` tab. Each item is labelled with its session's name.
+- A tab with images you haven't looked at shows `•`; new images never switch tabs for you. Within the current tab, a new image comes to the front if you were looking at the newest one.
+- Tabs close themselves within a minute once their branch is deleted (e.g. after a merge) or their repo is gone.
+- In the pane: `h`/`l` or `Tab` previous/next tab, `p`/`n` older/newer, `r` redraw, `x` close tab, `q` quit. Each tab keeps its last 50 items in `$XDG_RUNTIME_DIR/claude-media/<tab>/`, which is cleared on reboot.
 
 Images travel through the pty (direct transmission with unicode placeholders), so they also render when you attach to the tmux session over SSH from another machine.
 
