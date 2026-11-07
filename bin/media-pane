@@ -71,7 +71,7 @@ render() {
 redraw=1 reload=0
 trap 'redraw=1' WINCH USR1
 trap 'reload=1' USR2
-trap 'kill 0' EXIT
+trap 'tmux set -pu -t "$TMUX_PANE" allow-passthrough; tmux set -pu -t "$TMUX_PANE" @claude_media; kill 0' EXIT
 inotifywait -mq -e moved_to --include '\.meta$' --format x "$Q" | while read -r _; do kill -USR2 $$; done &
 printf '\e[?25l'
 load
