@@ -7,7 +7,7 @@ bin=$HOME/.local/bin
 tmux_dir=${XDG_CONFIG_HOME:-$HOME/.config}/tmux
 settings=$HOME/.claude/settings.json
 claude_md=$HOME/.claude/CLAUDE.md
-rule='To show me an image or video, run `show-media <path>`; never try to render images in Bash output.'
+rule='To show me an image or video, run `show-media <path>`; when I ask to see a specific file, run `show-media --focus <path>`. Never try to render images in Bash output.'
 
 mkdir -p "$bin" "$tmux_dir" "$HOME/.claude"
 install -m 755 "$src"/bin/{show-media,media-pane,media-toggle} "$bin/"
@@ -22,7 +22,9 @@ jq '.hooks.PostToolUse = ([.hooks.PostToolUse[]? | select(any(.hooks[]?; (.comma
   + [{"matcher": "Read|Write|Edit", "hooks": [{"type": "command", "command": "\"$HOME/.local/bin/show-media\" --hook", "async": true}]}])' \
 	"$settings" >"$settings.tmp" && mv "$settings.tmp" "$settings"
 
-grep -qxF "$rule" "$claude_md" 2>/dev/null || echo "$rule" >>"$claude_md"
+# Replace an earlier version of the rule (any line starting "To show me an image or video") with the current one.
+touch "$claude_md"
+{ grep -v '^To show me an image or video' "$claude_md"; echo "$rule"; } >"$claude_md.tmp" && mv "$claude_md.tmp" "$claude_md"
 
 tmux source-file "$tmux_dir/tmux.conf" 2>/dev/null || true
 echo "Installed. In tmux press prefix+M (default Ctrl+b, then Shift+m) to open the media pane."

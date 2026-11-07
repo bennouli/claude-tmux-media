@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# show-media <file...>   queue images/videos for the tmux media pane (media-pane)
-# show-media --hook      same, reading a Claude Code hook's JSON from stdin
+# show-media <file...>           queue images/videos for the tmux media pane (media-pane); marks their tab with •
+# show-media --focus <file...>   same, and the pane switches to their tab
+# show-media --hook              like the first, reading a Claude Code hook's JSON from stdin
 # Each repo + branch gets its own tab, taken from where the session works (the hook's cwd, else $PWD).
 # Silent, always exits 0, does nothing when no media pane exists.
 exec >/dev/null 2>&1
@@ -34,9 +35,11 @@ tab_of() {
 
 sid=$CLAUDE_CODE_SESSION_ID
 dir=$PWD
-from_hook=0
-if [[ $1 == --hook ]]; then
-	from_hook=1
+focus=0
+if [[ $1 == --focus ]]; then
+	focus=1
+	shift
+elif [[ $1 == --hook ]]; then
 	input=$(cat)
 	sid=$(jq -r '.session_id // empty' <<<"$input")
 	dir=$(jq -r '.cwd // empty' <<<"$input")
@@ -67,8 +70,7 @@ for f in "$@"; do
 	mv "$T/$id.tmp" "$T/$id.meta"
 done
 
-# An explicit show-media brings its tab to the front; hook images only mark their tab.
-if ((shown && !from_hook)); then
+if ((shown && focus)); then
 	echo "$key" >"$Q/.focus.tmp" && mv "$Q/.focus.tmp" "$Q/.focus"
 fi
 
