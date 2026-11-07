@@ -3,8 +3,10 @@
 # show-media --hook      same, reading a Claude Code hook's JSON from stdin
 # Silent, always exits 0, does nothing when no media pane exists.
 exec >/dev/null 2>&1
+umask 077
 
-Q=${XDG_RUNTIME_DIR:-/tmp}/claude-media
+[[ -n $XDG_RUNTIME_DIR ]] || exit 0
+Q=$XDG_RUNTIME_DIR/claude-media
 KEEP=50
 MEDIA_RE='\.(png|jpe?g|gif|webp|bmp|tiff?|svg|mp4|mov|webm|mkv|avi|m4v)$'
 
@@ -27,7 +29,7 @@ mkdir -p "$Q" || exit 0
 label=$(session_label "$sid")
 
 for f in "$@"; do
-	[[ -f $f && ${f,,} =~ $MEDIA_RE ]] || continue
+	[[ -f $f && ${f,,} =~ $MEDIA_RE && $f != *$'\n'* ]] || continue
 	f=$(realpath "$f")
 	last=$(printf '%s\n' "$Q"/*.meta | sort | tail -1)
 	if [[ -f $last ]] && [[ $(sed -n 2p "$last") == "$f" ]] && cmp -s "$f" "$Q/$(head -1 "$last")"; then
@@ -42,6 +44,9 @@ done
 
 # ponytail: prune by count only; add a size cap if videos pile up in tmpfs
 printf '%s\n' "$Q"/*.meta | sort | head -n -$KEEP | while read -r m; do
-	[[ -f $m ]] && rm -f "$Q/$(head -1 "$m")" "$Q/.thumbs/$(head -1 "$m").png" "$m"
+	[[ -f $m ]] || continue
+	name=$(head -1 "$m")
+	[[ $name =~ ^[0-9]+\.[a-z0-9]+$ ]] && rm -f "$Q/$name" "$Q/.thumbs/$name.png"
+	rm -f "$m"
 done
 exit 0
