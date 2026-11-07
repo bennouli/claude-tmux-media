@@ -37,6 +37,27 @@ git clone https://github.com/bennouli/claude-tmux-media.git
 
 The installer copies the scripts to `~/.local/bin`, adds a `source-file` line to `~/.config/tmux/tmux.conf`, merges the hook into `~/.claude/settings.json` and adds one line to `~/.claude/CLAUDE.md`. Running it again changes nothing. New Claude sessions pick up the `CLAUDE.md` line.
 
+### tmux setup
+
+The pane needs these tmux settings. `install.sh` puts them in `~/.config/tmux/claude-media.conf` and sources that file; if you manage your tmux config yourself, add them to it instead:
+
+```tmux
+# prefix+M shows/hides the media pane next to the current pane (hidden keeps it running).
+bind M run-shell -b '$HOME/.local/bin/media-toggle #{pane_id}'
+
+# Image data only reaches a terminal while the pane is visible, and a newly attached client
+# (e.g. over SSH) has none, so panes re-send it whenever what a client shows changes.
+set-hook -g client-attached 'run-shell -b "$HOME/.local/bin/media-pane --refresh"'
+set-hook -g client-session-changed 'run-shell -b "$HOME/.local/bin/media-pane --refresh"'
+set-hook -g after-select-window 'run-shell -b "$HOME/.local/bin/media-pane --refresh"'
+```
+
+Then reload with `tmux source-file ~/.config/tmux/tmux.conf` (or `~/.tmux.conf`).
+
+- Without the `bind` line there is no way to open the pane except running `media-pane` in a pane yourself.
+- Without the hooks, images go blank after switching windows or sessions or attaching from another machine until you press `r` in the pane.
+- `allow-passthrough` is not needed in your config: the media pane turns it on for itself only and turns it off again when it exits.
+
 ## Limits
 
 - GIF, video and SVG show a single still frame: Ghostty does not play Kitty animation frames, and video players cannot draw through tmux passthrough.
