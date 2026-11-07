@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# show-media <file...>   queue images/videos for the tmux media pane (media-pane)
+# show-media --hook      same, reading a Claude Code hook's JSON from stdin
+# Silent, always exits 0, does nothing when no media pane exists.
+exec >/dev/null 2>&1
+
+Q=${XDG_RUNTIME_DIR:-/tmp}/claude-media
+KEEP=50
+MEDIA_RE='\.(png|jpe?g|gif|webp|bmp|tiff?|svg|mp4|mov|webm|mkv|avi|m4v)$'
+
+session_label() {
+	local sid=$1 name
+	[[ -n $sid ]] || { echo manual; return; }
+	name=$(jq -r --arg s "$sid" 'select(.sessionId == $s) | .name // empty' ~/.claude/sessions/*.json 2>/dev/null | head -1)
+	echo "${name:-${sid:0:8}}"
+}
+
+sid=$CLAUDE_CODE_SESSION_ID
+if [[ $1 == --hook ]]; then
+	input=$(cat)
+	sid=$(jq -r '.session_id // empty' <<<"$input")
+	set -- "$(jq -r '.tool_input.file_path // empty' <<<"$input")"
+fi
+
+tmux list-panes -a -F '#{@claude_media}' 2>/dev/null | grep -qx 1 || exit 0
+mkdir -p "$Q" || exit 0
+label=$(session_label "$sid")
+
+for f in "$@"; do
+	[[ -f $f && ${f,,} =~ $MEDIA_RE ]] || continue
+	f=$(realpath "$f")
+	last=$(printf '%s\n' "$Q"/*.meta | sort | tail -1)
+	if [[ -f $last ]] && [[ $(sed -n 2p "$last") == "$f" ]] && cmp -s "$f" "$Q/$(head -1 "$last")"; then
+		continue
+	fi
+	id=$(date +%s%N)
+	ext=${f##*.}
+	cp -- "$f" "$Q/$id.${ext,,}" || continue
+	printf '%s\n%s\n%s\n%s\n' "$id.${ext,,}" "$f" "$label" "$(date '+%H:%M:%S')" >"$Q/$id.tmp"
+	mv "$Q/$id.tmp" "$Q/$id.meta"
+done
+
+# ponytail: prune by count only; add a size cap if videos pile up in tmpfs
+printf '%s\n' "$Q"/*.meta | sort | head -n -$KEEP | while read -r m; do
+	[[ -f $m ]] && rm -f "$Q/$(head -1 "$m")" "$Q/.thumbs/$(head -1 "$m").png" "$m"
+done
+exit 0

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# media-pane            viewer for the queue show-media fills; runs in a tmux pane
+# media-pane --refresh  make every media pane re-send its image (new client attached, pane re-shown)
+# Keys: p older · n newer · r redraw · q quit. Jumps to each new item as it arrives.
+
+Q=${XDG_RUNTIME_DIR:-/tmp}/claude-media
+
+if [[ $1 == --refresh ]]; then
+	tmux list-panes -a -F '#{@claude_media} #{pane_pid}' 2>/dev/null |
+		awk '$1 == 1 { print $2 }' | xargs -r kill -USR1 2>/dev/null
+	exit 0
+fi
+
+mkdir -p "$Q/.thumbs"
+tmux set -p -t "$TMUX_PANE" @claude_media 1
+shopt -s nullglob
+items=()
+idx=-1
+
+load() {
+	items=("$Q"/*.meta)
+	idx=$((${#items[@]} - 1))
+}
+
+# Ghostty has no Kitty animation frames and tmux can't pass mpv's video through, so GIF/video/SVG show one still frame.
+still_frame() {
+	local media=$1 thumb="$Q/.thumbs/${1##*/}.png"
+	case ${media,,} in
+	*.svg) [[ -f $thumb ]] || rsvg-convert -o "$thumb" "$media" ;;
+	*.gif | *.mp4 | *.mov | *.webm | *.mkv | *.avi | *.m4v)
+		[[ -f $thumb ]] || ffmpeg -v error -y -i "$media" -frames:v 1 "$thumb" </dev/null ;;
+	*) echo "$media"; return ;;
+	esac
+	echo "$thumb"
+}
+
+render() {
+	local cols rows name orig label time src note
+	cols=$(tput cols) rows=$(tput lines)
+	printf '\e[H\e[2J\e[3J'
+	if ((${#items[@]} == 0)); then
+		printf 'media pane: waiting for images\n\e[2mshow-media <file> or a Claude Read/Write/Edit of an image\e[0m'
+		return
+	fi
+	{ read -r name; read -r orig; read -r label; read -r time; } <"${items[idx]}"
+	src=$(still_frame "$Q/$name")
+	[[ $src == "$Q/$name" ]] || note=' · still frame'
+	printf '\e[1m[%d/%d]\e[0m %s · %s%s\n' $((idx + 1)) ${#items[@]} "$label" "$time" "$note"
+	((${#orig} > cols)) && orig="…${orig: -$((cols - 1))}"
+	printf '\e[2m%s\e[0m' "$orig"
+	if [[ ! -f $src ]]; then
+		printf '\e[3;1H(no frame: %s missing or conversion failed)' "${src##*/}"
+	# FOOTGUN: icat exits 0 when it fails to decode, so stderr is the only failure signal.
+	elif ! kitten icat --passthrough=tmux --transfer-mode=stream --align=left --scale-up \
+		--place "$((cols - 1))x$((rows - 3))@0x2" "$src" 2>"$Q/.icat-err" || [[ -s $Q/.icat-err ]]; then
+		printf '\e[3;1H\e[31micat: %s\e[0m\n' "$(sed 's/\x1b\[[0-9;]*m//g' "$Q/.icat-err" | head -c $((cols * 2)))"
+		command -v chafa >/dev/null && chafa -s "${cols}x$((rows - 4))" "$src"
+	fi
+	printf '\e[%d;1H\e[2mp older · n newer · r redraw · q quit\e[0m' "$rows"
+}
+
+redraw=1 reload=0
+trap 'redraw=1' WINCH USR1
+trap 'reload=1' USR2
+trap 'kill 0' EXIT
+inotifywait -mq -e moved_to --include '\.meta$' --format x "$Q" | while read -r _; do kill -USR2 $$; done &
+printf '\e[?25l'
+load
+
+while :; do
+	if ((reload)); then reload=0 redraw=1; load; fi
+	if ((redraw)); then redraw=0; render; fi
+	read -rsn1 -t 1 key || continue
+	case $key in
+	p) ((idx > 0)) && { idx=$((idx - 1)); redraw=1; } ;;
+	n) ((idx < ${#items[@]} - 1)) && { idx=$((idx + 1)); redraw=1; } ;;
+	r) redraw=1 ;;
+	q) exit 0 ;;
+	esac
+done

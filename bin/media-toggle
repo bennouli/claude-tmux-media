@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# media-toggle <pane-id>: show/hide the media pane next to <pane-id> (prefix+M passes #{pane_id}).
+# Hidden = parked in window "_media", still running.
+here=${1:?usage: media-toggle <pane-id>}
+read -r id win < <(tmux list-panes -a -F '#{@claude_media} #{pane_id} #{window_id}' | awk '$1 == 1 { print $2, $3; exit }')
+cur=$(tmux display -p -t "$here" '#{window_id}')
+
+if [[ -z $id ]]; then
+	tmux split-window -h -d -l 40% -t "$here" "$HOME/.local/bin/media-pane"
+elif [[ $win == "$cur" ]]; then
+	tmux break-pane -d -s "$id" -n _media
+else
+	tmux join-pane -h -d -l 40% -s "$id" -t "$here" && kill -USR1 "$(tmux display -p -t "$id" '#{pane_pid}')"
+fi
